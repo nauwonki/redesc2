@@ -3,17 +3,22 @@ import sys
 from socketTCP import SocketTCP
 
 def init_server(host, port):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((host, port))
+    socket = SocketTCP()
+    socket.bind((host, port))
+
+    print(f"Server listening on {host}:{port}")
+
+    connection_socket, client_addr = socket.accept()
+    print(f"Accepted connection from {client_addr}")
 
     message = b""
 
     while True:
-        segment, addr = sock.recvfrom(SocketTCP.buffer if False else 18)
+        segment, addr = connection_socket.sock.recvfrom(connection_socket.buffer)
         parsed_segment = SocketTCP.parse_segment(segment)
 
         print(f"Received segment from {addr}: {parsed_segment}")
-        print(f"seq={parsed_segment['seq_num']}, syn={parsed_segment['syn']}, ack={parsed_segment['ack']}, fin={parsed_segment['fin']}, payload={parsed_segment['payload']}")
+        print(f"seq={parsed_segment['seq_num']}, payload={parsed_segment['payload']}")
 
         message += parsed_segment['payload']
 

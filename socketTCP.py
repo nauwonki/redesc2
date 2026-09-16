@@ -1,12 +1,13 @@
 import socket
 import struct
+import random
 
 class SocketTCP:
     SYN_FLAG = 0b001
     ACK_FLAG = 0b010
     FIN_FLAG = 0b100
 
-    header_format = "!BB" 
+    header_format = "!BBB" 
     header_size = struct.calcsize(header_format)
 
     def __init__(self):
@@ -21,9 +22,58 @@ class SocketTCP:
     def settimeout(self, sec):
         self.timeout = sec
         self.sock.settimeout(sec)
+    
+    def bind(self, address):
+        self.sock.bind(address)
+    
+    def connect(self, address):
+        self.remote_address = address
+        self.seq_num = random.randint(0, 100)
 
+        syn_segment = SocketTCP.create_segment(seq_num=self.seq_num, syn=True)
+        self.sock.sendto(syn_segment, self.remote_address)
+
+        while True:
+            segment, addr = self.sock.recvfrom(self.buffer)
+            parsed = SocketTCP.parse_segment(segment)
+
+            if parsed["syn"] and parsed["ack"] and parsed["ack_num"] == self.seq_num + 1:
+                self.remote_address = addr
+                self.ack_num = parsed["seq_num"] + 1
+                self.seq_num += 1
+                break
+        
+        ack_segment = self.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
+        self.sock.sendto(ack_segment, self.remote_address)
+        self.is_connected = True
+    
+    def accept(self):
+        while True:
+            segment, client_addr = self.sock.recvfrom(self.buffer)
+            parsed = SocketTCP.parse_segment(segment)
+
+            if parsed["syn"] and not parsed["ack"]:
+                client_seq = parsed["seq_num"]
+
+                new_socket = SocketTCP()
+                new_socket.bind((self.sock.getsockname()[0], 0))
+                new_socket.seq_num = random.randint(0, 100)
+                new_socket.ack_num = client_seq + 1
+
+                syn_ack = SocketTCP.create_segment(seq_num=new_socket.seq_num, ack_num=new_socket.ack_num, syn=True, ack=True)
+                new_socket.sock.sendto(syn_ack, client_addr)
+
+                while True:
+                    ack_segment, ack_addr = new_socket.sock.recvfrom(new_socket.buffer)
+                    parsed_ack = SocketTCP.parse_segment(ack_segment)
+
+                    if parsed_ack["ack"] and parsed_ack["ack_num"] == new_socket.seq_num + 1:
+                        new_socket.seq_num += 1
+                        new_socket.is_connected = True
+                        return new_socket, client_addr
+                    
     @staticmethod
-    def create_segment(seq_num, syn=False, ack=False, fin=False, payload=b''):
+    def create_segment(seq_num, ack_num= 0, syn=False, ack=False, fin=False, payload=b''):
         flags = 0
         if syn:
             flags |= SocketTCP.SYN_FLAG
@@ -32,12 +82,12 @@ class SocketTCP:
         if fin:
             flags |= SocketTCP.FIN_FLAG
 
-        header = struct.pack(SocketTCP.header_format, flags, seq_num & 0xFF)
+        header = struct.pack(SocketTCP.header_format, flags, seq_num & 0xFF, ack_num & 0xFF)
         return header + payload
     
     @staticmethod
     def parse_segment(segment):
-        flags, seq_num = struct.unpack(SocketTCP.header_format, segment[:SocketTCP.header_size])
+        flags, seq_num, ack_num = struct.unpack(SocketTCP.header_format, segment[:SocketTCP.header_size])
         payload = segment[SocketTCP.header_size:]
 
         return {
@@ -45,6 +95,7 @@ class SocketTCP:
             "ack": bool(flags & SocketTCP.ACK_FLAG),
             "fin": bool(flags & SocketTCP.FIN_FLAG),
             "seq_num": seq_num,
+            "ack_num": ack_num,
             "payload": payload,
         }
         

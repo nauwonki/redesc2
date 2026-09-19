@@ -14,5 +14,15 @@ if __name__ == "__main__":
     client_socketTCP = SocketTCP()
     client_socketTCP.connect(address)
 
+    # test 1
+    message = "Mensje de len=16".encode()
+    client_socketTCP.send(message)
+    # test 2
+    message = "Mensaje de largo 19".encode()
+    client_socketTCP.send(message)
+    # test 3
+    message = "Mensaje de largo 19".encode()
+    client_socketTCP.send(message)
+
     print(f"¡Handshake Exitoso!")
     print(f"El cliente se conectó al servidor en el endpoint: {client_socketTCP.remote_address}")

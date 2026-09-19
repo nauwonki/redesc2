@@ -10,15 +10,8 @@ def send_message(host, port):
     print("Connected.")
 
     message = sys.stdin.buffer.read()
-    c = 16
-    seq = client_socket.seq_num
-    chunks = [message[i:i+c] for i in range(0, len(message), c)]
-
-    for id, chunk in enumerate(chunks):
-        last = (id == len(chunks) - 1)
-        segment = SocketTCP.create_segment(seq_num=seq, fin=last, payload=chunk)
-        client_socket.sock.sendto(segment, client_socket.remote_address)
-        seq = (1 - seq) % 256
+    client_socket.send(message)
+    print("Message sent.")
         
 if __name__ == "__main__":
     if len(sys.argv) != 3:

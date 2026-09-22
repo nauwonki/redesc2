@@ -17,7 +17,7 @@ class SocketTCP:
         self.is_connected = False
         self.seq_num = 0
         self.ack_num = 0
-        self.timeout = 20.0
+        self.timeout = 10.0
         self.max_payload_size = 16
         self.buffer = self.header_size + self.max_payload_size
         self.sock.settimeout(self.timeout)
@@ -79,7 +79,7 @@ class SocketTCP:
     
     def send_stop_and_wait(self, payload, fin=False):
         segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, fin=fin, payload=payload)
-
+        expected_ack_num = (self.seq_num + len(payload)) % 256
         while True:
             self.sock.sendto(segment, self.remote_address)
             try:
@@ -88,8 +88,8 @@ class SocketTCP:
                 continue
             
             parsed = SocketTCP.parse_segment(ack_segment)
-            if parsed["ack"] and parsed["ack_num"] == (self.seq_num + 1) % 256:
-                self.seq_num = (self.seq_num + 1) % 256
+            if parsed["ack"] and parsed["ack_num"] == expected_ack_num:
+                self.seq_num = expected_ack_num
                 return
             continue
     
@@ -102,9 +102,8 @@ class SocketTCP:
             message[i:i+self.max_payload_size] for i in range(0, len(message), self.max_payload_size)
         ] or [b'']
 
-        for i, chunk in enumerate(c):
-            last = (i == len(c) - 1)
-            self.send_stop_and_wait(chunk, fin=last)
+        for i in c:
+            self.send_stop_and_wait(i)
 
     def recv_stop_and_wait(self):
         while True:
@@ -115,7 +114,7 @@ class SocketTCP:
                 self.remote_address = addr
             
             if parsed["seq_num"] == self.ack_num:
-                new_ack_num = (self.ack_num + 1) % 256
+                new_ack_num = (self.ack_num + len(parsed["payload"])) % 256
                 ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=new_ack_num, ack=True)
                 self.sock.sendto(ack_segment, self.remote_address)
                 self.ack_num = new_ack_num
@@ -141,6 +140,60 @@ class SocketTCP:
         result = self.leftover[:r]
         self.leftover = self.leftover[r:]
         return result
+    
+    def close(self):
+        self.sock.settimeout(self.timeout)
+        fin_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, fin=True)
+        expected_ack_num = (self.seq_num + 1) % 256
+        while True:
+            self.sock.sendto(fin_segment, self.remote_address)
+            try:
+                segment, addr = self.sock.recvfrom(self.buffer)
+            except socket.timeout:
+                continue
+            parsed = SocketTCP.parse_segment(segment)
+            if parsed["ack"] and parsed["ack_num"] == expected_ack_num:
+                break
+        
+        self.ack_num = (parsed["seq_num"] + 1) % 256
+        self.seq_num = (self.seq_num + 2) % 256
+        
+        final_ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
+        self.sock.sendto(final_ack_segment, self.remote_address)
+
+        self.is_connected = False
+        self.sock.close()
+
+    def recv_close(self):
+        self.sock.settimeout(self.timeout)
+        while True:
+            try:
+                segment, addr = self.sock.recvfrom(self.buffer)
+            except socket.timeout:
+                continue
+            parsed = SocketTCP.parse_segment(segment)
+            if parsed["fin"]:
+                if self.remote_address is None:
+                    self.remote_address = addr
+                self.ack_num = (parsed["seq_num"] + 1) % 256
+                break
+        
+        finack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
+        expected_fin_num = (self.ack_num + 1) % 256
+
+        while True:
+            self.sock.sendto(finack_segment, self.remote_address)
+            try:
+                segment, addr = self.sock.recvfrom(self.buffer)
+            except socket.timeout:
+                continue
+            parsed = SocketTCP.parse_segment(segment)
+            if parsed["ack"] and parsed["ack_num"] and not parsed["fin"] == expected_fin_num:
+                self.seq_num = expected_fin_num
+                break
+        
+        self.is_connected = False
+        self.sock.close()
                     
     @staticmethod
     def create_segment(seq_num, ack_num= 0, syn=False, ack=False, fin=False, payload=b''):

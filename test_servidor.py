@@ -38,6 +38,7 @@ if __name__ == "__main__":
     if (message_part_1 + message_part_2) == "Mensaje de largo 19".encode(): print("Test 3: Passed")
     else: print("Test 3: Failed")
 
+    connection_socketTCP.recv_close()
+    print(f"Servidor cerró la conexión con el cliente.")
+
     print(f"¡Handshake Exitoso!")
-    print(f"Nueva conexión establecida desde la dirección remota: {new_address}")
-    print(f"El servidor asignó un nuevo socket en el puerto local: {connection_socketTCP.sock.getsockname()[1]}")

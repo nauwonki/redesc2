@@ -24,5 +24,7 @@ if __name__ == "__main__":
     message = "Mensaje de largo 19".encode()
     client_socketTCP.send(message)
 
+    client_socketTCP.close()
+    print(f"Cliente cerró la conexión con el servidor.")
+
     print(f"¡Handshake Exitoso!")
-    print(f"El cliente se conectó al servidor en el endpoint: {client_socketTCP.remote_address}")

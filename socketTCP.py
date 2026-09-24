@@ -23,6 +23,7 @@ class SocketTCP:
         self.sock.settimeout(self.timeout)
         self.remaining_bytes = 0
         self.leftover = b""
+        self.pending_segment = None
 
     def settimeout(self, sec):
         self.timeout = sec
@@ -34,18 +35,22 @@ class SocketTCP:
     def connect(self, address):
         self.remote_address = address
         self.seq_num = random.randint(0, 100)
+        self.sock.settimeout(self.timeout)
 
         syn_segment = SocketTCP.create_segment(seq_num=self.seq_num, syn=True)
-        self.sock.sendto(syn_segment, self.remote_address)
+        expected_ack = (self.seq_num + 1) % 256
 
         while True:
-            segment, addr = self.sock.recvfrom(self.buffer)
+            self.sock.sendto(syn_segment, self.remote_address)
+            try:
+                segment, addr = self.sock.recvfrom(self.buffer)
+            except socket.timeout:
+                continue
             parsed = SocketTCP.parse_segment(segment)
-
-            if parsed["syn"] and parsed["ack"] and parsed["ack_num"] == self.seq_num + 1:
+            if parsed["syn"] and parsed["ack"] and parsed["ack_num"] == expected_ack:
                 self.remote_address = addr
-                self.ack_num = parsed["seq_num"] + 1
-                self.seq_num += 1
+                self.ack_num = (parsed["seq_num"] + 1) % 256
+                self.seq_num = expected_ack
                 break
         
         ack_segment = self.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
@@ -62,19 +67,29 @@ class SocketTCP:
 
                 new_socket = SocketTCP()
                 new_socket.bind((self.sock.getsockname()[0], 0))
+                new_socket.remote_address = client_addr
                 new_socket.seq_num = random.randint(0, 100)
-                new_socket.ack_num = client_seq + 1
+                new_socket.ack_num = (client_seq + 1) % 256
+                new_socket.settimeout(self.timeout)
 
                 syn_ack = SocketTCP.create_segment(seq_num=new_socket.seq_num, ack_num=new_socket.ack_num, syn=True, ack=True)
-                new_socket.sock.sendto(syn_ack, client_addr)
+                expected_ack = (new_socket.seq_num + 1) % 256
 
                 while True:
-                    ack_segment, ack_addr = new_socket.sock.recvfrom(new_socket.buffer)
-                    parsed_ack = SocketTCP.parse_segment(ack_segment)
-
-                    if parsed_ack["ack"] and parsed_ack["ack_num"] == new_socket.seq_num + 1:
-                        new_socket.seq_num += 1
+                    new_socket.sock.sendto(syn_ack, client_addr)
+                    try:
+                        reply, addr = new_socket.sock.recvfrom(new_socket.buffer)
+                    except socket.timeout:
+                        continue
+                    parsed_ack = SocketTCP.parse_segment(reply)
+                    if parsed_ack["ack"] and not parsed_ack["syn"] and parsed_ack["ack_num"] == expected_ack:
+                        new_socket.seq_num = expected_ack
                         new_socket.is_connected = True
+                        return new_socket, client_addr
+                    if parsed_ack["seq_num"] == new_socket.ack_num:
+                        new_socket.seq_num = expected_ack
+                        new_socket.is_connected = True
+                        new_socket.pending_segment = reply
                         return new_socket, client_addr
     
     def send_stop_and_wait(self, payload, fin=False):
@@ -107,11 +122,15 @@ class SocketTCP:
 
     def recv_stop_and_wait(self):
         while True:
-            segment, addr = self.sock.recvfrom(self.buffer)
+            if self.pending_segment is not None:
+                segment = self.pending_segment
+                self.pending_segment = None
+            else:
+                segment, addr = self.sock.recvfrom(self.buffer)
+                if self.remote_address is None:
+                    self.remote_address = addr
+            
             parsed = SocketTCP.parse_segment(segment)
-
-            if self.remote_address is None:
-                self.remote_address = addr
             
             if parsed["seq_num"] == self.ack_num:
                 new_ack_num = (self.ack_num + len(parsed["payload"])) % 256

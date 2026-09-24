@@ -58,8 +58,12 @@ class SocketTCP:
         self.is_connected = True
     
     def accept(self):
+        self.sock.settimeout(self.timeout)
         while True:
-            segment, client_addr = self.sock.recvfrom(self.buffer)
+            try:
+                segment, client_addr = self.sock.recvfrom(self.buffer)
+            except socket.timeout:
+                continue
             parsed = SocketTCP.parse_segment(segment)
 
             if parsed["syn"] and not parsed["ack"]:
@@ -121,12 +125,16 @@ class SocketTCP:
             self.send_stop_and_wait(i)
 
     def recv_stop_and_wait(self):
+        self.sock.settimeout(self.timeout)
         while True:
             if self.pending_segment is not None:
                 segment = self.pending_segment
                 self.pending_segment = None
             else:
-                segment, addr = self.sock.recvfrom(self.buffer)
+                try:
+                    segment, addr = self.sock.recvfrom(self.buffer)
+                except socket.timeout:
+                    continue
                 if self.remote_address is None:
                     self.remote_address = addr
             

@@ -1,6 +1,7 @@
 import socket
 import struct
 import random
+import time
 
 class SocketTCP:
     SYN_FLAG = 0b001
@@ -172,21 +173,32 @@ class SocketTCP:
         self.sock.settimeout(self.timeout)
         fin_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, fin=True)
         expected_ack_num = (self.seq_num + 1) % 256
-        while True:
+
+        max_timeout = 3
+        timeouts = 0
+        received_finack = False
+        parsed = None
+
+        while timeouts < max_timeout:
             self.sock.sendto(fin_segment, self.remote_address)
             try:
                 segment, addr = self.sock.recvfrom(self.buffer)
             except socket.timeout:
+                timeouts += 1
                 continue
             parsed = SocketTCP.parse_segment(segment)
             if parsed["ack"] and parsed["ack_num"] == expected_ack_num:
+                received_finack = True
                 break
-        
-        self.ack_num = (parsed["seq_num"] + 1) % 256
-        self.seq_num = (self.seq_num + 2) % 256
-        
-        final_ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
-        self.sock.sendto(final_ack_segment, self.remote_address)
+        if received_finack:
+            self.ack_num = (parsed["seq_num"] + 1) % 256
+            self.seq_num = (self.seq_num + 1) % 256
+            final_ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
+            for _ in range(3):
+                self.sock.sendto(final_ack_segment, self.remote_address)
+                time.sleep(self.timeout)
+        else:
+            print("Failed to receive FIN-ACK after 3 attempts. Closing socket anyway.")
 
         self.is_connected = False
         self.sock.close()
@@ -208,16 +220,24 @@ class SocketTCP:
         finack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
         expected_fin_num = (self.ack_num + 1) % 256
 
-        while True:
+        max_timeout = 3
+        timeouts = 0
+        received_ack = False
+
+        while timeouts < max_timeout:
             self.sock.sendto(finack_segment, self.remote_address)
             try:
                 segment, addr = self.sock.recvfrom(self.buffer)
             except socket.timeout:
+                timeouts += 1
                 continue
             parsed = SocketTCP.parse_segment(segment)
             if parsed["ack"] and parsed["ack_num"] and not parsed["fin"] == expected_fin_num:
                 self.seq_num = expected_fin_num
+                received_ack = True
                 break
+        if not received_ack:
+            print("Failed to receive final ACK after 3 attempts. Closing socket anyway.")
         
         self.is_connected = False
         self.sock.close()

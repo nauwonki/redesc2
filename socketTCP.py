@@ -12,7 +12,7 @@ class SocketTCP:
     header_size = struct.calcsize(header_format)
     length_format = "!I" 
 
-    def __init__(self):
+    def __init__(self, debug=False):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.remote_address = None
         self.is_connected = False

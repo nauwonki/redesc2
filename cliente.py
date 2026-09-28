@@ -1,17 +1,7 @@
 import socket
 import sys
+import os
 from socketTCP import SocketTCP
-
-def send_message(host, port):
-    client_socket = SocketTCP()
-
-    print(f"Connecting to {host}:{port}...")
-    client_socket.connect((host, port))
-    print("Connected.")
-
-    message = sys.stdin.buffer.read()
-    client_socket.send(message)
-    print("Message sent.")
         
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -20,6 +10,15 @@ if __name__ == "__main__":
 
     host = sys.argv[1]
     port = int(sys.argv[2])
+    debug = os.environ.get("DEBUG", "0") == "1"
+
+    message = sys.stdin.buffer.read()
 
     print("Client is running...")
-    send_message(host, port)
+    client_socket = SocketTCP(debug=debug)
+    client_socket.connect((host, port))
+    client_socket.send(message)
+    client_socket.close()
+
+    
+    

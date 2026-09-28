@@ -1,25 +1,7 @@
 import socket 
 import sys
+import os
 from socketTCP import SocketTCP
-
-def init_server(host, port):
-    socket = SocketTCP()
-    socket.bind((host, port))
-
-    print(f"Server listening on {host}:{port}")
-
-    connection_socket, client_addr = socket.accept()
-    print(f"Accepted connection from {client_addr}")
-
-    while True:
-        message = b""
-        while connection_socket.remaining_bytes > 0 or not message:
-            chunk = connection_socket.recv(16)
-            message += chunk
-            if connection_socket.remaining_bytes == 0 and not connection_socket.leftover:
-                break
-        
-        print(f"Received message from {client_addr}: {message.decode('utf-8')}")
                  
 if __name__ == "__main__":
     if len(sys.argv) != 3:
@@ -28,6 +10,22 @@ if __name__ == "__main__":
 
     host = sys.argv[1]
     port = int(sys.argv[2])
+    debug = os.environ.get("DEBUG", "0") == "1"
 
-    print("Server is running...")
-    init_server(host, port)
+    server_socket = SocketTCP(debug=debug)
+    server_socket.bind((host, port))
+    connection_socket, client_addr = server_socket.accept()
+
+    message = b""
+    while connection_socket.remaining_bytes > 0 or not message:
+        chunk = connection_socket.recv(16)
+        message += chunk
+        if connection_socket.remaining_bytes == 0 and not connection_socket.leftover:
+            break
+
+    sys.stdout.buffer.write(message)
+    connection_socket.recv_close()
+        
+    print(f"Received message from {client_addr}: {message.decode('utf-8')}")
+
+

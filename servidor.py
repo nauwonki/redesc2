@@ -26,6 +26,6 @@ if __name__ == "__main__":
     sys.stdout.buffer.write(message)
     connection_socket.recv_close()
         
-    print(f"Received message from {client_addr}: {message.decode('utf-8')}")
+    print(f"Received message from {client_addr}: {len(message)} bytes", file=sys.stderr)
 
 

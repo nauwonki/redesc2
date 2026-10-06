@@ -1,5 +1,5 @@
 import sys
-from socketTCP import SocketTCP
+from redesc2.actividad1.socketTCP import SocketTCP
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:

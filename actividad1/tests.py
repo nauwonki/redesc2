@@ -1,2 +1,2 @@
 import sys
-from socketTCP import SocketTCP
+from redesc2.actividad1.socketTCP import SocketTCP

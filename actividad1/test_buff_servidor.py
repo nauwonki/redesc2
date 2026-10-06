@@ -1,6 +1,6 @@
 import sys
 import os
-from socketTCP import SocketTCP
+from redesc2.actividad1.socketTCP import SocketTCP
 
 if __name__ == "__main__":
     host, port = sys.argv[1], int(sys.argv[2])

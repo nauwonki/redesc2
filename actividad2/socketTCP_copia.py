@@ -3,6 +3,8 @@ import struct
 import random
 import time
 import sys
+from socketUDP import SocketUDP
+from slidingWindowCC import SlidingWindowCC
 
 class CongestionControl:
     SlowStart = "slow_start"
@@ -52,13 +54,15 @@ class SocketTCP:
     header_size = struct.calcsize(header_format)
     length_format = "!I" 
 
+    window_size = 8
+
     def __init__(self, debug=False):
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock = SocketUDP()
         self.remote_address = None
         self.is_connected = False
         self.seq_num = 0
         self.ack_num = 0
-        self.timeout = 10.0
+        self.timeout = 1.0
         self.max_payload_size = 16
         self.buffer = self.header_size + self.max_payload_size
         self.sock.settimeout(self.timeout)
@@ -79,6 +83,9 @@ class SocketTCP:
     
     def bind(self, address):
         self.sock.bind(address)
+
+    def _send_raw(self, segment, address=None):
+        self.sock.socket_udp.sendto(segment, address or self.remote_address)
     
     def connect(self, address):
         self.remote_address = address
@@ -95,10 +102,12 @@ class SocketTCP:
             try:
                 segment, addr = self.sock.recvfrom(self.buffer)
             except socket.timeout:
+                self.sock.stop_timer()
                 self._log("connect", "timeout esperando SYN+ACK")
                 continue
             parsed = SocketTCP.parse_segment(segment)
             if parsed["syn"] and parsed["ack"] and parsed["ack_num"] == expected_ack:
+                self.sock.stop_timer()
                 self.remote_address = addr
                 self.ack_num = (parsed["seq_num"] + 1) % 256
                 self.seq_num = expected_ack
@@ -107,7 +116,7 @@ class SocketTCP:
             self._log("connect", "segmento inesperado, ignore")
         
         ack_segment = self.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
-        self.sock.sendto(ack_segment, self.remote_address)
+        self._send_raw(ack_segment)
         self.is_connected = True
         self._log("connect", "handshake completo")
     
@@ -124,7 +133,7 @@ class SocketTCP:
                 client_seq = parsed["seq_num"]
 
                 new_socket = SocketTCP(debug=self.debug)
-                new_socket.bind((self.sock.getsockname()[0], 0))
+                new_socket.bind((self.sock.socket_udp.getsockname()[0], 0))
                 new_socket.remote_address = client_addr
                 new_socket.seq_num = random.randint(0, 100)
                 new_socket.ack_num = (client_seq + 1) % 256
@@ -174,8 +183,8 @@ class SocketTCP:
                 return
             self._log("send", f"ACK inesperado, ignore")
             continue
-    
-    def send(self, message):
+
+    def send_using_stop_and_wait(self, message):
         self.sock.settimeout(self.timeout)
         length_payload = struct.pack(self.length_format, len(message))
         self.send_stop_and_wait(length_payload)
@@ -186,6 +195,68 @@ class SocketTCP:
 
         for i in c:
             self.send_stop_and_wait(i)
+    
+    def send_slots(self, window, slots) -> None:
+        for i in slots:
+            data = window.get_data(i)
+            if data is None:
+                continue
+            seq = window.get_sequence_number(i)
+            segment = SocketTCP.create_segment(seq_num=seq, ack_num=self.ack_num, payload=data)
+            self.sock.sendto(segment, self.remote_address, timer_index=0)
+    
+    def count_ack(self, window, answer) -> int:
+        parsed = SocketTCP.parse_segment(answer)
+        if not parsed["ack"]:
+            return 0
+        acked = 0
+        for i in range(window.window_size):
+            data = window.get_data(i)
+            if data is None:
+                break
+            end_of_segment = (window.get_sequence_number(i) + len(data)) % 256
+            if parsed["ack_num"] == end_of_segment:
+                acked += i + 1
+        return acked
+
+    def send_using_go_back_n(self, message: bytes) -> None:
+        length_payload = struct.pack(self.length_format, len(message))
+        c = [message[i:i+self.max_payload_size] for i in range(0, len(message), self.max_payload_size)]
+        data_list = [length_payload] + c
+
+        window = SlidingWindowCC(self.window_size, data_list, self.seq_num)
+        self.sock.settimeout(self.timeout)
+
+        self.send_slots(window, range(window.window_size))
+        while window.get_data(0) is not None:
+            try:
+                answer, addr = self.sock.recvfrom(self.buffer)
+            except TimeoutError:
+                self.sock.stop_timer(0)
+                self.send_slots(window, range(window.window_size))
+                continue
+
+            acked = self.count_ack(window, answer)
+            if acked == 0:
+                continue
+
+            window.move_window(acked)
+            if window.get_data(0) is None:
+                self.sock.stop_timer(0)
+            else:
+                new_slots = [i for i in range(window.window_size - acked, window.window_size) if window.get_data(i) is not None]
+                if new_slots:
+                    self.sock.stop_timer(0)
+                    self.send_slots(window, new_slots)
+        self.seq_num = (self.seq_num + sum(len(data) for data in data_list)) % 256
+    
+    
+    
+    def send(self, message, mode="stop_and_wait"):
+        if mode == "stop_and_wait":
+            self.send_using_stop_and_wait(message)
+        elif mode == "go_back_n":
+            self.send_using_go_back_n(message)
 
     def recv_stop_and_wait(self):
         self.sock.settimeout(self.timeout)
@@ -216,8 +287,8 @@ class SocketTCP:
                 self.sock.sendto(ack_segment, self.remote_address)
                 self._log("recv", f"Duplicado (seq={parsed['seq_num']}) esperado={self.ack_num}")
                 continue
-
-    def recv(self, buff_size):
+    
+    def recv_using_stop_and_wait(self, buff_size):
         self.sock.settimeout(self.timeout)
         if self.remaining_bytes == 0 and not self.leftover:
             length_payload = self.recv_stop_and_wait()
@@ -236,6 +307,29 @@ class SocketTCP:
         self._log("recv", f"recv() retorna {len(result)} bytes (quedan {len(self.leftover)}, y {self.remaining_bytes} por llegar)")
         return result
     
+    def recv_using_go_back_n(self, buff_size):
+        self.sock.settimeout(-1)
+        if self.remaining_bytes == 0 and not self.leftover:
+            length_payload = self.recv_stop_and_wait()
+            self.remaining_bytes = struct.unpack(self.length_format, length_payload)[0]
+
+        t = min(buff_size, self.remaining_bytes + len(self.leftover))
+        while len(self.leftover) < t:
+            payload = self.recv_stop_and_wait()
+            self.remaining_bytes -= len(payload)
+            self.leftover += payload
+        
+        r = min(len(self.leftover), buff_size)
+        result = self.leftover[:r]
+        self.leftover = self.leftover[r:]
+        return result
+
+    def recv(self, buff_size, mode="stop_and_wait"):
+        if mode == "stop_and_wait":
+            return self.recv_using_stop_and_wait(buff_size)
+        elif mode == "go_back_n":
+            return self.recv_using_go_back_n(buff_size)
+    
     def close(self):
         self.sock.settimeout(self.timeout)
         fin_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, fin=True)
@@ -253,10 +347,12 @@ class SocketTCP:
                 segment, addr = self.sock.recvfrom(self.buffer)
             except socket.timeout:
                 timeouts += 1
+                self.sock.stop_timer()
                 self._log("close", f"timeout num:{timeouts} esperando FIN+ACK")
                 continue
             parsed = SocketTCP.parse_segment(segment)
             if parsed["fin"] and parsed["ack"] and parsed["ack_num"] == expected_ack_num:
+                self.sock.stop_timer()
                 received_finack = True
                 self._log("close", "FIN+ACK recibido")
                 break
@@ -265,7 +361,7 @@ class SocketTCP:
             self.seq_num = (self.seq_num + 1) % 256
             final_ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
             for _ in range(3):
-                self.sock.sendto(final_ack_segment, self.remote_address)
+                self._send_raw(final_ack_segment)
                 self._log("close", f"ACK reenviado")
                 time.sleep(self.timeout)
         else:

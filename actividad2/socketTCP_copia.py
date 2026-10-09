@@ -148,18 +148,23 @@ class SocketTCP:
                     try:
                         reply, addr = new_socket.sock.recvfrom(new_socket.buffer)
                     except socket.timeout:
+                        new_socket.sock.stop_timer()
                         new_socket._log("accept", "timeout esperando ACK")
                         continue
                     parsed_ack = SocketTCP.parse_segment(reply)
                     if parsed_ack["ack"] and not parsed_ack["syn"] and parsed_ack["ack_num"] == expected_ack:
+                        new_socket.sock.stop_timer()
                         new_socket.seq_num = expected_ack
                         new_socket.is_connected = True
+                        new_socket.settimeout(-1)
                         new_socket._log("accept", "ACK handshake recibido")
                         return new_socket, client_addr
                     if parsed_ack["seq_num"] == new_socket.ack_num:
+                        new_socket.sock.stop_timer()
                         new_socket.seq_num = expected_ack
                         new_socket.is_connected = True
                         new_socket.pending_segment = reply
+                        new_socket.settimeout(-1)
                         new_socket._log("accept", "Caso borde: ACK perdido, datos recibidos")
                         return new_socket, client_addr
                     new_socket._log("accept", "segmento inesperado, ignore")
@@ -278,13 +283,13 @@ class SocketTCP:
             if parsed["seq_num"] == self.ack_num:
                 new_ack_num = (self.ack_num + len(parsed["payload"])) % 256
                 ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=new_ack_num, ack=True)
-                self.sock.sendto(ack_segment, self.remote_address)
+                self._send_raw(ack_segment)
                 self._log("recv", f"segmento OK seq={parsed['seq_num']} len={len(parsed['payload'])} ACK {new_ack_num}")
                 self.ack_num = new_ack_num
                 return parsed["payload"]
             else:
                 ack_segment = SocketTCP.create_segment(seq_num=self.seq_num, ack_num=self.ack_num, ack=True)
-                self.sock.sendto(ack_segment, self.remote_address)
+                self._send_raw(ack_segment)
                 self._log("recv", f"Duplicado (seq={parsed['seq_num']}) esperado={self.ack_num}")
                 continue
     

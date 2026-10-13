@@ -13,6 +13,9 @@ if __name__ == "__main__":
     debug = os.environ.get("DEBUG", "0") == "1"
 
     message = sys.stdin.buffer.read()
+    print(f"Sending message to {host}:{port}: {len(message)} bytes", file=sys.stderr)
+    if len(message) == 0:
+        print("Warning: No data to send. The message is empty.", file=sys.stderr)
 
     print("Client is running...")
     client_socket = SocketTCP(debug=debug)

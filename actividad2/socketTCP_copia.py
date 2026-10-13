@@ -54,7 +54,8 @@ class SocketTCP:
     header_size = struct.calcsize(header_format)
     length_format = "!I" 
 
-    window_size = 8
+    WINDOW_SIZE = 8
+    MAX_WINDOW_SEGMENTS = 30
 
     def __init__(self, debug=False):
         self.sock = SocketUDP()
@@ -71,6 +72,10 @@ class SocketTCP:
         self.pending_segment = None
         self.debug = debug
         self._t0 = time.time()
+        self.congestion_control = False
+    
+    def set_congestion_control(self, val: bool):
+        self.congestion_control = bool(val)
 
     def _log(self, tag, msg):
         if self.debug:
@@ -201,61 +206,111 @@ class SocketTCP:
         for i in c:
             self.send_stop_and_wait(i)
     
-    def send_slots(self, window, slots) -> None:
-        for i in slots:
-            data = window.get_data(i)
-            if data is None:
-                continue
-            seq = window.get_sequence_number(i)
-            segment = SocketTCP.create_segment(seq_num=seq, ack_num=self.ack_num, payload=data)
-            self.sock.sendto(segment, self.remote_address, timer_index=0)
-    
-    def count_ack(self, window, answer) -> int:
-        parsed = SocketTCP.parse_segment(answer)
-        if not parsed["ack"]:
-            return 0
-        acked = 0
+    def unsent_slots(self, window, next_send):
+        slots = []
         for i in range(window.window_size):
             data = window.get_data(i)
             if data is None:
                 break
-            end_of_segment = (window.get_sequence_number(i) + len(data)) % 256
-            if parsed["ack_num"] == end_of_segment:
-                acked += i + 1
-        return acked
+            if window.get_sequence_number(i) >= next_send:
+                slots.append(i)
+        return slots
+    
+    def send_slots(self, window, slots):
+        end = None
+        for i in slots:
+            data = window.get_data(i)
+            seq = window.get_sequence_number(i)
+            segment = SocketTCP.create_segment(seq_num=seq, ack_num=self.ack_num, payload=data)
+            self.sock.sendto(segment, self.remote_address, timer_index=0)
+            self._log("send_slots", f"segmento enviado seq={seq} len={len(data)}")
+            end = seq + len(data)
+        return end
+    
+    def slide(self, window, answer, highest_sent):
+        parsed = SocketTCP.parse_segment(answer)
+        if not parsed["ack"] or window.get_data(0) is None:
+            return False
+        
+        b = window.get_sequence_number(0)
+        d = (parsed["ack_num"] - b) % 256
+        ack_abs = b + d
+        if d == 0 or ack_abs > highest_sent:
+            return False
+        moved = False
+        while window.get_data(0) is not None and window.get_sequence_number(0) < ack_abs:
+            k = 0
+            for i in range(window.window_size):
+                data = window.get_data(i)
+                if data is None:
+                    break
+                if window.get_sequence_number(i) + len(data) <= ack_abs:
+                    k += 1
+                else:
+                    break
+            if k == 0:
+                break
+            window.move_window(k)
+            moved = True
+        return moved
 
     def send_using_go_back_n(self, message: bytes) -> None:
+        congestion_controler = CongestionControl(8)
+        MSS = congestion_controler.MSS
         length_payload = struct.pack(self.length_format, len(message))
-        c = [message[i:i+self.max_payload_size] for i in range(0, len(message), self.max_payload_size)]
+        c = [message[i:i+MSS] for i in range(0, len(message), MSS)]
         data_list = [length_payload] + c
 
-        window = SlidingWindowCC(self.window_size, data_list, self.seq_num)
+        if self.congestion_control:
+            window_size = congestion_controler.get_MSS_in_cwnd()
+            self._log("send_using_go_back_n", f"congestion control enabled, initial window size: {window_size}")
+        else:
+            window_size = self.WINDOW_SIZE
+        inital_seq = self.seq_num
+        window = SlidingWindowCC(window_size, data_list, inital_seq)
         self.sock.settimeout(self.timeout)
 
-        self.send_slots(window, range(window.window_size))
+        next_send = inital_seq
+        highest_sent = inital_seq
+
+        slots = self.unsent_slots(window, next_send)
+        next_send = self.send_slots(window, slots)
+        highest_sent = max(highest_sent, next_send)
+
         while window.get_data(0) is not None:
             try:
                 answer, addr = self.sock.recvfrom(self.buffer)
+                if self.slide(window, answer, highest_sent):
+                    if self.congestion_control:
+                        congestion_controler.event_ack_received()
+                        window_size = min(congestion_controler.get_MSS_in_cwnd(), self.MAX_WINDOW_SEGMENTS)
+                        window.update_window_size(window_size)
+                    
+                    if window.get_data(0) is None:
+                        self.sock.stop_timer()
+                    else:
+                        next_send = max(next_send, window.get_sequence_number(0))
+                        new_slots = self.unsent_slots(window, next_send)
+                        if new_slots:
+                            self.sock.stop_timer()
+                            next_send = self.send_slots(window, new_slots)
+                            highest_sent = max(highest_sent, next_send)
+                    
             except TimeoutError:
-                self.sock.stop_timer(0)
-                self.send_slots(window, range(window.window_size))
-                continue
-
-            acked = self.count_ack(window, answer)
-            if acked == 0:
-                continue
-
-            window.move_window(acked)
-            if window.get_data(0) is None:
-                self.sock.stop_timer(0)
-            else:
-                new_slots = [i for i in range(window.window_size - acked, window.window_size) if window.get_data(i) is not None]
-                if new_slots:
-                    self.sock.stop_timer(0)
-                    self.send_slots(window, new_slots)
+                if self.congestion_control:
+                    congestion_controler.event_timeout()
+                    window_size = min(congestion_controler.get_MSS_in_cwnd(), self.MAX_WINDOW_SEGMENTS)
+                    window.update_window_size(window_size)
+                
+                self.sock.stop_timer()
+                next_send = window.get_sequence_number(0)
+                slots = self.unsent_slots(window, next_send)
+                next_send = self.send_slots(window, slots)
+            if self.congestion_control:
+                self._log("send_using_go_back_n", f"congestion control final window size: {window_size}")
+                self._log("send_using_go_back_n", f"congestion control final cwnd: {congestion_controler.get_cwnd()}")
+                self._log("send_using_go_back_n", f"congestion control final ssthresh: {congestion_controler.get_ssthresh()}")
         self.seq_num = (self.seq_num + sum(len(data) for data in data_list)) % 256
-    
-    
     
     def send(self, message, mode="stop_and_wait"):
         if mode == "stop_and_wait":

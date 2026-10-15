@@ -73,6 +73,7 @@ class SocketTCP:
         self.debug = debug
         self._t0 = time.time()
         self.congestion_control = False
+        self.number_of_sent_segments = 0
     
     def set_congestion_control(self, val: bool):
         self.congestion_control = bool(val)
@@ -81,6 +82,10 @@ class SocketTCP:
         if self.debug:
             t = time.time() - self._t0
             print(f"[{t:7.3f}s][{tag}] {msg}", file=sys.stderr)
+    
+    def _log_cc(self, event, cc, window_size):  
+        self._log("cc", f"{event:8s} cwnd={cc.get_cwnd():.2f} ssthresh={cc.get_ssthresh()} "
+                        f"estado={cc.current_state} ventana={window_size}")
 
     def settimeout(self, sec):
         self.timeout = sec
@@ -222,6 +227,7 @@ class SocketTCP:
             data = window.get_data(i)
             seq = window.get_sequence_number(i)
             segment = SocketTCP.create_segment(seq_num=seq, ack_num=self.ack_num, payload=data)
+            self.number_of_sent_segments += 1
             self.sock.sendto(segment, self.remote_address, timer_index=0)
             self._log("send_slots", f"segmento enviado seq={seq} len={len(data)}")
             end = seq + len(data)
@@ -285,6 +291,7 @@ class SocketTCP:
                         congestion_controler.event_ack_received()
                         window_size = min(congestion_controler.get_MSS_in_cwnd(), self.MAX_WINDOW_SEGMENTS)
                         window.update_window_size(window_size)
+                        self._log_cc("ACK received", congestion_controler, window_size)
                     
                     if window.get_data(0) is None:
                         self.sock.stop_timer()
@@ -301,6 +308,7 @@ class SocketTCP:
                     congestion_controler.event_timeout()
                     window_size = min(congestion_controler.get_MSS_in_cwnd(), self.MAX_WINDOW_SEGMENTS)
                     window.update_window_size(window_size)
+                    self._log_cc("Timeout", congestion_controler, window_size)
                 
                 self.sock.stop_timer()
                 next_send = window.get_sequence_number(0)

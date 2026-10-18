@@ -19,7 +19,7 @@ class SocketTCP:
         self.is_connected = False
         self.seq_num = 0
         self.ack_num = 0
-        self.timeout = 10.0
+        self.timeout = 1.0
         self.max_payload_size = 16
         self.buffer = self.header_size + self.max_payload_size
         self.sock.settimeout(self.timeout)
